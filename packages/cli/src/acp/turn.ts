@@ -343,7 +343,10 @@ export const make = Effect.fnUntraced(function* (input: {
       const attached = yield* input.sessions.require(params.sessionId)
       const catalog = yield* input.catalog.get(attached.cwd)
       const childUpdates = (yield* Ref.get(input.capabilities)).childSessionUpdates
-      const prompt = yield* preparePrompt(catalog, params.prompt, SessionMessage.ID.create())
+      const parts = yield* Effect.forEach(promptContentToParts(params.prompt), referenceUnreadableFile, {
+        concurrency: "unbounded",
+      })
+      const prompt = preparePrompt(catalog, parts, SessionMessage.ID.create())
       // Check and register in one synchronous step.
       const turn = yield* Effect.withFiber((fiber) => {
         if (FiberMap.hasUnsafe(turns, attached.id)) {
@@ -385,14 +388,7 @@ function aborted(signal: AbortSignal) {
   })
 }
 
-const preparePrompt = Effect.fnUntraced(function* (
-  catalog: Catalog,
-  prompt: PromptRequest["prompt"],
-  messageID: string,
-) {
-  const parts = yield* Effect.forEach(promptContentToParts(prompt), referenceUnreadableFile, {
-    concurrency: "unbounded",
-  })
+function preparePrompt(catalog: Catalog, parts: readonly PromptPart[], messageID: string): PreparedPrompt {
   const visible = parts.filter((part) => part.type !== "text" || (!part.synthetic && !part.ignored))
   const synthetic = parts.flatMap((part) => (part.type === "text" && part.synthetic ? [part.text] : []))
   const text = visible.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n")
@@ -401,11 +397,11 @@ const preparePrompt = Effect.fnUntraced(function* (
   const command = slash ? catalog.commands.find((item) => item.name === slash.name) : undefined
   const start = turnStart(messageID, slash)
   return { start, text, files, synthetic, slash, command }
-})
+}
 
-// The server reads attached files on admission and rejects the whole prompt when one is unreadable.
+// Covers only missing or permission-denied targets; the server still rejects oversized, non-regular, or unlistable ones.
 function referenceUnreadableFile(part: PromptPart) {
-  if (part.type !== "file" || !part.url.startsWith("file:")) return Effect.succeed(part)
+  if (part.type !== "file" || !part.url.startsWith("file://")) return Effect.succeed(part)
   return Effect.tryPromise(() => access(fileURLToPath(part.url), constants.R_OK)).pipe(
     Effect.as(part),
     Effect.orElseSucceed(() => linkReference(part.filename, part.url)),
