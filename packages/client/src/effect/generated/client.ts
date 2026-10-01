@@ -109,6 +109,8 @@ import type {
   SessionViewOutput,
   MessageListInput,
   MessageListOutput,
+  MonitorListInput,
+  MonitorListOutput,
   ModelListInput,
   ModelListOutput,
   ModelDefaultInput,
@@ -822,6 +824,13 @@ const EndpointMessageList = (raw: RawClient["server.message"]) => (input: Messag
   )
 
 const adaptGroupMessage = (raw: RawClient["server.message"]) => ({ list: EndpointMessageList(raw) })
+
+const EndpointMonitorList = (raw: RawClient["server.monitor"]) => (input: MonitorListInput) =>
+  preserveEffect<MonitorListOutput>()(
+    raw["monitor.list"]({ params: { sessionID: input["sessionID"] } }).pipe(Effect.mapError(mapClientError)),
+  )
+
+const adaptGroupMonitor = (raw: RawClient["server.monitor"]) => ({ list: EndpointMonitorList(raw) })
 
 const EndpointModelList = (raw: RawClient["server.model"]) => (input?: ModelListInput) =>
   preserveEffect<ModelListOutput>()(
@@ -1579,6 +1588,7 @@ const adaptClient = (raw: RawClient) => ({
   plugin: adaptGroupPlugin(raw["server.plugin"]),
   session: adaptGroupSession(raw["server.session"]),
   message: adaptGroupMessage(raw["server.message"]),
+  monitor: adaptGroupMonitor(raw["server.monitor"]),
   model: adaptGroupModel(raw["server.model"]),
   generate: adaptGroupGenerate(raw["server.generate"]),
   provider: adaptGroupProvider(raw["server.provider"]),

@@ -221,6 +221,19 @@ export type FormExternalField = { key: string; type: "external"; url: string; ti
 
 export type FormValue = string | number | "Infinity" | "-Infinity" | "NaN" | boolean | Array<string>
 
+export type MonitorID = string
+
+export type MonitorStatus = "running" | "ended"
+
+export type MonitorReason =
+  | "exited"
+  | "expired"
+  | "cancelled"
+  | "rate_limit"
+  | "output_limit"
+  | "server_restarted"
+  | "error"
+
 export type ModelReasoningField = "reasoning" | "reasoning_content" | "reasoning_text" | (string & {})
 
 export type ModelMaxTokensField = "max_completion_tokens" | "max_tokens"
@@ -1460,6 +1473,24 @@ export type FormMultiselectField = {
 
 export type FormAnswer = { [x: string]: FormValue }
 
+export type MonitorInfo = {
+  id: MonitorID
+  sessionID: string
+  shellID: string
+  description: string
+  delivery: SessionInboxDelivery
+  pid?: number
+  log: string
+  startedAt: number
+  expiresAt: number
+  endedAt?: number
+  eventCount: number
+  outputBytes: number
+  status: MonitorStatus
+  reason?: MonitorReason
+  exitCode?: number
+}
+
 export type ModelCompatibility = {
   reasoningField?: ModelReasoningField
   requireReasoning?: boolean
@@ -1907,6 +1938,33 @@ export type CredentialKey = {
   key: string
   metadata?: { [x: string]: JsonValue }
   configuration?: FormAnswer
+}
+
+export type MonitorStarted = {
+  id: string
+  created: number
+  metadata?: { [x: string]: any }
+  type: "monitor.started"
+  location?: LocationRef
+  data: { info: MonitorInfo }
+}
+
+export type MonitorEvent = {
+  id: string
+  created: number
+  metadata?: { [x: string]: any }
+  type: "monitor.event"
+  location?: LocationRef
+  data: { info: MonitorInfo; lines: Array<string> }
+}
+
+export type MonitorEnded = {
+  id: string
+  created: number
+  metadata?: { [x: string]: any }
+  type: "monitor.ended"
+  location?: LocationRef
+  data: { info: MonitorInfo }
 }
 
 export type ConnectionInfo = ConnectionCredentialInfo | ConnectionEnvInfo
@@ -2488,6 +2546,9 @@ export type V2Event =
   | ShellCreated
   | ShellExited
   | ShellDeleted
+  | MonitorStarted
+  | MonitorEvent
+  | MonitorEnded
   | FormCreated
   | FormReplied
   | FormCancelled
@@ -5576,6 +5637,10 @@ export type MessageListInput = {
 }
 
 export type MessageListOutput = SessionMessagesResponse
+
+export type MonitorListInput = { readonly sessionID: { readonly sessionID: string }["sessionID"] }
+
+export type MonitorListOutput = Array<MonitorInfo>
 
 export type ModelListInput = {
   readonly location?: { readonly location?: { readonly directory?: string | undefined } | undefined }["location"]

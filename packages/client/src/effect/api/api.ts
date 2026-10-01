@@ -24,6 +24,7 @@ import type { EventLog } from "@opencode/schema/event-log"
 import type { Shell } from "@opencode/schema/shell"
 import type { Provider } from "@opencode/schema/provider"
 import type { Form } from "@opencode/schema/form"
+import type { Monitor } from "@opencode/schema/monitor"
 import type { Integration } from "@opencode/schema/integration"
 import type { Mcp } from "@opencode/schema/mcp"
 import type { Credential } from "@opencode/schema/credential"
@@ -1522,6 +1523,14 @@ export interface MessageApi<E = never> {
   readonly list: MessageListOperation<E>
 }
 
+export type MonitorListInput = { readonly sessionID: Session.ID }
+export type MonitorListOutput = ReadonlyArray<Monitor.Info>
+export type MonitorListOperation<E = never> = (input: MonitorListInput) => Effect.Effect<MonitorListOutput, E>
+
+export interface MonitorApi<E = never> {
+  readonly list: MonitorListOperation<E>
+}
+
 export type ModelListInput = { readonly location?: { readonly directory?: string | undefined } | undefined }
 export type ModelListOutput = { readonly location: Location.PublicRef; readonly data: ReadonlyArray<Model.Info> }
 export type ModelListOperation<E = never> = (input?: ModelListInput) => Effect.Effect<ModelListOutput, E>
@@ -2387,6 +2396,7 @@ export interface AppApi<E = never> {
   readonly plugin: PluginApi<E>
   readonly session: SessionApi<E>
   readonly message: MessageApi<E>
+  readonly monitor: MonitorApi<E>
   readonly model: ModelApi<E>
   readonly generate: GenerateApi<E>
   readonly provider: ProviderApi<E>
