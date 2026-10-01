@@ -8,6 +8,7 @@ import { Keymap } from "../../../context/keymap"
 import { useComposerTab } from "./context"
 import { useDialog } from "../../../ui/dialog"
 import { DialogShellOutput } from "../../../component/dialog-shell-output"
+import { useToast } from "../../../ui/toast"
 
 export function ShellTab(props: { sessionID: string }) {
   const data = useData()
@@ -16,6 +17,7 @@ export function ShellTab(props: { sessionID: string }) {
   const composer = useComposerTab()
   const shortcuts = Keymap.useShortcuts()
   const dialog = useDialog()
+  const toast = useToast()
 
   const entries = createMemo(() => {
     const monitors = data.monitor.list(props.sessionID)
@@ -33,7 +35,7 @@ export function ShellTab(props: { sessionID: string }) {
     void data.monitor.sync(props.sessionID).catch(() => undefined)
   })
 
-  const [store, setStore] = createStore({ selected: 0 })
+  const [store, setStore] = createStore({ selected: 0, stopping: {} as Record<string, boolean | undefined> })
   let scroll: ScrollBoxRenderable | undefined
 
   const selectedEntry = createMemo(() => entries()[store.selected])
@@ -62,15 +64,21 @@ export function ShellTab(props: { sessionID: string }) {
     const cleanup = composer.register({
       id: "shell",
       label: "Background",
-      hints: () =>
-        selectedEntry()?.shell
-          ? [
-              { label: "output", shortcut: shortcuts.get("composer.shell.select") ?? "" },
-              ...(selectedEntry()?.monitor?.status === "ended"
-                ? []
-                : [{ label: "stop", shortcut: shortcuts.get("composer.shell.kill") ?? "" }]),
-            ]
-          : [],
+      hints: () => {
+        const entry = selectedEntry()
+        if (!entry?.shell) return []
+        return [
+          { label: "output", shortcut: shortcuts.get("composer.shell.select") ?? "" },
+          ...(entry.monitor?.status === "ended"
+            ? []
+            : [
+                {
+                  label: store.stopping[entry.shell.id] ? "stopping…" : "stop",
+                  shortcut: store.stopping[entry.shell.id] ? "" : (shortcuts.get("composer.shell.kill") ?? ""),
+                },
+              ]),
+        ]
+      },
     })
     onCleanup(cleanup)
   })
@@ -114,11 +122,17 @@ export function ShellTab(props: { sessionID: string }) {
         group: "Composer",
         run() {
           const shell = selectedEntry()?.shell
-          if (!shell || selectedEntry()?.monitor?.status === "ended") return
-          void client.api.shell.remove({
-            id: shell.id,
-            location: { directory: shell.location.directory },
-          })
+          if (!shell || selectedEntry()?.monitor?.status === "ended" || store.stopping[shell.id]) return
+          setStore("stopping", shell.id, true)
+          void client.api.shell
+            .remove({
+              id: shell.id,
+              location: { directory: shell.location.directory },
+            })
+            .catch(() => {
+              toast.show({ message: "Could not stop background task. Try again.", variant: "error" })
+            })
+            .finally(() => setStore("stopping", shell.id, undefined))
         },
       },
     ],
@@ -149,7 +163,7 @@ export function ShellTab(props: { sessionID: string }) {
                   <text
                     fg={active() ? theme.text.action.primary.focused : theme.text.action.primary.base}
                     attributes={active() ? TextAttributes.BOLD : undefined}
-                    wrapMode="none"
+                    wrapMode={entry.monitor ? "word" : "none"}
                   >
                     {entry.monitor ? `Monitor · ${entry.monitor.description}` : entry.shell?.command.split("\n", 1)[0]}
                   </text>
@@ -159,7 +173,9 @@ export function ShellTab(props: { sessionID: string }) {
                         <text fg={active() ? theme.text.action.primary.focused : theme.text.muted} wrapMode="word">
                           {monitor().eventCount} events ·{" "}
                           {monitor().status === "running"
-                            ? "running"
+                            ? store.stopping[monitor().shellID]
+                              ? "stopping…"
+                              : "running"
                             : `ended: ${monitor().reason?.replaceAll("_", " ") ?? "unknown"}${monitor().exitCode === undefined ? "" : ` (exit ${monitor().exitCode})`}`}
                         </text>
                         <text fg={active() ? theme.text.action.primary.focused : theme.text.muted} wrapMode="word">

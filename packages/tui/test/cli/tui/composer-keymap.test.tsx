@@ -13,7 +13,7 @@ import { RouteProvider, useRoute } from "../../../src/context/route"
 import { ThemeProvider } from "../../../src/context/theme"
 import { Composer } from "../../../src/routes/session/composer"
 import { DialogProvider } from "../../../src/ui/dialog"
-import { ToastProvider } from "../../../src/ui/toast"
+import { Toast, ToastProvider } from "../../../src/ui/toast"
 import { createApi, createEventStream, createFetch, directory, json } from "../../fixture/tui-client"
 import { TestTuiContexts } from "../../fixture/tui-environment"
 import { createTuiResolvedConfig } from "../../fixture/tui-runtime"
@@ -31,6 +31,7 @@ async function renderComposer(
   keybinds: Partial<TuiKeybind.Keybinds>,
   focusedTextarea = false,
   monitors: MonitorInfo[] = [],
+  onRemove?: (id: string) => Promise<Response>,
 ) {
   const events = createEventStream()
   const interrupted: string[] = []
@@ -74,6 +75,7 @@ async function renderComposer(
     }
     if (shellID && request.method === "DELETE") {
       removed.push(shellID)
+      if (onRemove) return onRemove(shellID)
       return new Response(null, { status: 204 })
     }
   }, events)
@@ -98,6 +100,7 @@ async function renderComposer(
       <>
         {focusedTextarea && <textarea focused={true} initialValue="draft" />}
         <Composer sessionID="parent" open={true} defaultTab={defaultTab} onClose={() => closed++} />
+        <Toast />
       </>
     )
   }
@@ -212,6 +215,23 @@ test("shell list shows one line per command", async () => {
     expect(frame).toContain("python3 - <<'PY'")
     expect(frame).not.toContain("import json")
   } finally {
+    composer.app.renderer.destroy()
+  }
+})
+
+test("stopping a background task shows progress, prevents duplicates, and reports failure", async () => {
+  const response = Promise.withResolvers<Response>()
+  const composer = await renderComposer("shell", {}, false, [], () => response.promise)
+  try {
+    composer.dispatch("composer.shell.kill")
+    composer.dispatch("composer.shell.kill")
+    await composer.app.waitForFrame((frame) => frame.includes("stopping…"))
+    expect(composer.removed).toEqual(["sh-a"])
+    response.resolve(new Response("Unavailable", { status: 503 }))
+    await composer.app.waitForFrame((frame) => frame.includes("Could not stop background task"), { maxPasses: 100 })
+    expect(composer.app.captureCharFrame()).toContain("stop ctrl+d")
+  } finally {
+    response.resolve(new Response(null, { status: 204 }))
     composer.app.renderer.destroy()
   }
 })
