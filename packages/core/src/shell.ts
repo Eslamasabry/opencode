@@ -44,6 +44,8 @@ export type Capture = {
   maxBytes?: number
   // Bounded watchers must not leave descendants alive when the group leader exits first.
   forceKill?: boolean
+  // The caller owns log retention and deletion, independently of the shell inventory.
+  retainOutput?: boolean
 }
 
 type Active = {
@@ -52,6 +54,7 @@ type Active = {
   file: string
   size: number
   newlines: number
+  retainOutput?: boolean
   // Resolves with the terminal Info once the command exits, times out, or is killed. A wait
   // started after termination resolves immediately from the already-completed deferred.
   done: Deferred.Deferred<Info, NotFoundError>
@@ -177,7 +180,7 @@ const layer = () =>
         if (command.timeoutFiber) yield* Fiber.interrupt(command.timeoutFiber)
         // Unblock any wait still pending when the command is removed before it terminated.
         yield* Deferred.fail(command.done, new NotFoundError({ id }))
-        yield* Effect.promise(() => unlink(command.file).catch(() => {}))
+        if (!command.retainOutput) yield* Effect.promise(() => unlink(command.file).catch(() => {}))
         yield* bus.publish(Shell.Event.Deleted, { id })
       })
 
@@ -295,7 +298,7 @@ const layer = () =>
 
         const id = Shell.ID.ascending()
         const args = ShellSelect.args(invocation.shell, invocation.command)
-        const file = path.join(outputDir, `${id}.out`)
+        const file = path.join(outputDir, `${capture?.retainOutput ? "monitor-" : ""}${id}.out`)
 
         const info: Info = {
           id,
@@ -336,6 +339,7 @@ const layer = () =>
                 file,
                 size: 0,
                 newlines: 0,
+                retainOutput: capture?.retainOutput,
                 done: Deferred.makeUnsafe<Info, NotFoundError>(),
               }
               commands.set(id, command)

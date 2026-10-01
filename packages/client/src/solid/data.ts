@@ -41,6 +41,7 @@ import type {
 } from "../promise"
 import { Worktree } from "@opencode/schema/worktree"
 import { SessionID } from "@opencode/schema/session-id"
+import { Monitor } from "@opencode/schema/monitor"
 import { SessionMessage } from "@opencode/schema/session-message"
 import {
   isFormAlreadySettledError,
@@ -608,7 +609,13 @@ export function createData(config: CreateDataInput) {
         const info = event.data.info
         if (!store.session.monitor[info.sessionID] && !monitorUpdates.has(info.sessionID)) return
         monitorUpdates.get(info.sessionID)?.set(info.id, info)
-        setStore("session", "monitor", info.sessionID, (current) => ({ ...current, [info.id]: info }))
+        const retained = Monitor.retain(Object.values({ ...store.session.monitor[info.sessionID], [info.id]: info }))
+        setStore(
+          "session",
+          "monitor",
+          info.sessionID,
+          reconcile(Object.fromEntries(retained.map((item) => [item.id, item]))),
+        )
         return
       }
       case "server.connected": {
@@ -1850,7 +1857,12 @@ export function createData(config: CreateDataInput) {
             // A progress or exit event can overtake the list response on remote clients.
             const current = new Map(snapshot.map((info) => [info.id, info]))
             updates.forEach((info, id) => current.set(id, info))
-            setStore("session", "monitor", sessionID, reconcile(Object.fromEntries(current)))
+            setStore(
+              "session",
+              "monitor",
+              sessionID,
+              reconcile(Object.fromEntries(Monitor.retain([...current.values()]).map((info) => [info.id, info]))),
+            )
           } finally {
             if (monitorUpdates.get(sessionID) === updates) monitorUpdates.delete(sessionID)
           }

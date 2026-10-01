@@ -49,6 +49,11 @@ async function renderComposer(
       if (monitorReads++ > 0) monitorReloaded.resolve()
       return json(monitors)
     }
+    if (url.pathname.endsWith("/stop") && request.method === "POST") {
+      const monitor = monitors.find((item) => url.pathname.includes(item.id))!
+      removed.push(monitor.shellID)
+      return json({ ...monitor, status: "ended", reason: "cancelled" })
+    }
     if (url.pathname === "/api/session/active")
       return json({ data: { "child-a": { type: "running" }, "child-b": { type: "running" } } })
     const sessionID = url.pathname.match(/^\/api\/session\/([^/]+)$/)?.[1]
@@ -66,6 +71,11 @@ async function renderComposer(
       })
     }
     const shellID = url.pathname.match(/^\/api\/shell\/([^/]+)$/)?.[1]
+    if (/^\/api\/session\/parent\/monitor\/[^/]+\/output$/.test(url.pathname)) {
+      const output = "shard 2 failure\nstderr diagnostic\n"
+      const cursor = Math.min(Number(url.searchParams.get("cursor") ?? 0), output.length)
+      return json({ output: output.slice(cursor), cursor: output.length, size: output.length, truncated: false })
+    }
     if (shellID && request.method === "GET") {
       viewed.push(shellID)
       return json({ location: { directory }, data: shells.find((shell) => shell.id === shellID) })
@@ -273,6 +283,17 @@ test.each([48, 100])("background tasks show monitor progress and restart status 
     await composer.monitorEnded
     await composer.app.waitForFrame((frame) => frame.includes("ended: server restarted"))
     expect(composer.app.captureCharFrame()).toContain("3 events")
+    composer.events.emit({
+      id: "evt_shell_exit",
+      created: 5,
+      type: "shell.exited",
+      location: { directory },
+      data: { id: monitor.shellID, status: "exited", exit: 1 },
+    })
+    await composer.app.renderOnce()
+    expect(composer.app.captureCharFrame()).toContain("output")
+    composer.dispatch("composer.shell.select")
+    await composer.app.waitForFrame((frame) => frame.includes("Monitor") && frame.includes("stderr diagnostic"))
   } finally {
     composer.app.renderer.destroy()
   }

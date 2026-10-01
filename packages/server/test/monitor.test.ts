@@ -64,6 +64,7 @@ it.live("reconciles running monitors before a plain server accepts requests", ()
       outputBytes: 42,
       status: "running",
     })
+    yield* Effect.promise(() => Bun.write(info.log, "shard failed\nstderr diagnostic\n"))
     yield* Effect.gen(function* () {
       const context = yield* Layer.build(createRoutes(options).pipe(Layer.provide(HttpServer.layerServices)))
       const database = Context.get(context, Database.Service)
@@ -95,5 +96,31 @@ it.live("reconciles running monitors before a plain server accepts requests", ()
     expect(yield* Effect.promise(() => response.json())).toMatchObject([
       { ...info, status: "ended", reason: "server_restarted" },
     ])
+    const api = OpenCode.make({
+      baseUrl: HttpServer.formatAddress(server.address),
+      headers: { authorization: `Basic ${btoa("opencode:secret")}` },
+    })
+    expect((yield* Effect.promise(() => api.monitor.output({ sessionID, id: info.id, limit: 12 }))).output).toBe(
+      "shard failed",
+    )
+    const other = yield* Effect.promise(() =>
+      fetch(
+        new URL(
+          `/api/session/${sessionID}/monitor/${Monitor.ID.create()}/output`,
+          HttpServer.formatAddress(server.address),
+        ),
+        { headers: { authorization: `Basic ${btoa("opencode:secret")}` } },
+      ),
+    )
+    expect(other.status).toBe(404)
+    expect((yield* Effect.promise(() => api.monitor.stop({ sessionID, id: info.id }))).reason).toBe("server_restarted")
+    const unrelated = yield* Effect.promise(() => api.session.create({ title: "Other session" }))
+    const denied = yield* Effect.promise(() =>
+      fetch(
+        new URL(`/api/session/${unrelated.id}/monitor/${info.id}/output`, HttpServer.formatAddress(server.address)),
+        { headers: { authorization: `Basic ${btoa("opencode:secret")}` } },
+      ),
+    )
+    expect(denied.status).toBe(404)
   }),
 )

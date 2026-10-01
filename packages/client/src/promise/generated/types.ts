@@ -2699,6 +2699,14 @@ export type FormAlreadySettledError = {
 export const isFormAlreadySettledError = (value: unknown): value is FormAlreadySettledError =>
   typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "FormAlreadySettledError"
 
+export type MonitorNotFoundError = {
+  readonly _tag: "MonitorNotFoundError"
+  readonly id: string
+  readonly message: string
+}
+export const isMonitorNotFoundError = (value: unknown): value is MonitorNotFoundError =>
+  typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "MonitorNotFoundError"
+
 export type ProviderNotFoundError = {
   readonly _tag: "ProviderNotFoundError"
   readonly providerID: string
@@ -5641,6 +5649,22 @@ export type MessageListOutput = SessionMessagesResponse
 export type MonitorListInput = { readonly sessionID: { readonly sessionID: string }["sessionID"] }
 
 export type MonitorListOutput = Array<MonitorInfo>
+
+export type MonitorOutputInput = {
+  readonly sessionID: { readonly sessionID: string; readonly id: string }["sessionID"]
+  readonly id: { readonly sessionID: string; readonly id: string }["id"]
+  readonly cursor?: { readonly cursor?: number | undefined; readonly limit?: number | undefined }["cursor"]
+  readonly limit?: { readonly cursor?: number | undefined; readonly limit?: number | undefined }["limit"]
+}
+
+export type MonitorOutputOutput = { output: string; cursor: number; size: number; truncated: boolean }
+
+export type MonitorStopInput = {
+  readonly sessionID: { readonly sessionID: string; readonly id: string }["sessionID"]
+  readonly id: { readonly sessionID: string; readonly id: string }["id"]
+}
+
+export type MonitorStopOutput = MonitorInfo
 
 export type ModelListInput = {
   readonly location?: { readonly location?: { readonly directory?: string | undefined } | undefined }["location"]

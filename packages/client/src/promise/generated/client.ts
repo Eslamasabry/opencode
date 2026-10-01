@@ -105,6 +105,10 @@ import type {
   MessageListOutput,
   MonitorListInput,
   MonitorListOutput,
+  MonitorOutputInput,
+  MonitorOutputOutput,
+  MonitorStopInput,
+  MonitorStopOutput,
   ModelListInput,
   ModelListOutput,
   ModelDefaultInput,
@@ -1114,6 +1118,29 @@ export function make(options: ClientOptions) {
           {
             method: "GET",
             path: `/api/session/${encodeURIComponent(input.sessionID)}/monitor`,
+            successStatus: 200,
+            declaredStatuses: [400, 401, 404],
+            empty: false,
+          },
+          requestOptions,
+        ),
+      output: (input: MonitorOutputInput, requestOptions?: RequestOptions) =>
+        request<MonitorOutputOutput>(
+          {
+            method: "GET",
+            path: `/api/session/${encodeURIComponent(input.sessionID)}/monitor/${encodeURIComponent(input.id)}/output`,
+            query: { cursor: input["cursor"], limit: input["limit"] },
+            successStatus: 200,
+            declaredStatuses: [400, 401, 404],
+            empty: false,
+          },
+          requestOptions,
+        ),
+      stop: (input: MonitorStopInput, requestOptions?: RequestOptions) =>
+        request<MonitorStopOutput>(
+          {
+            method: "POST",
+            path: `/api/session/${encodeURIComponent(input.sessionID)}/monitor/${encodeURIComponent(input.id)}/stop`,
             successStatus: 200,
             declaredStatuses: [400, 401, 404],
             empty: false,

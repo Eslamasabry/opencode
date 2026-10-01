@@ -20,11 +20,12 @@ import { type Capture, type Interface, NotFoundError } from "@opencode/core/shel
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Global } from "@opencode/util/global"
-import { Event, type Info } from "@opencode/schema/monitor"
+import { ENDED_LIMIT, Event, ID, type Info } from "@opencode/schema/monitor"
 import { Shell } from "@opencode/schema/shell"
 import { tempGlobalLayer } from "./fixture/global"
 import { offlineModels } from "./fixture/models"
 import { testEffect } from "./lib/effect"
+import { tmpdirScoped } from "./fixture/tmpdir"
 
 class Gate extends Context.Service<
   Gate,
@@ -234,6 +235,160 @@ const endedQueue = Effect.gen(function* () {
 })
 
 describe("Monitor", () => {
+  it.effect("prunes ended records and logs while retaining every running monitor", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const monitor = yield* Monitor.Service
+      const kv = yield* KV.Service
+      const directory = yield* tmpdirScoped()
+      const items: Info[] = []
+      for (let index = 0; index < ENDED_LIMIT + 3; index++) {
+        const info: Info = {
+          id: ID.create(),
+          sessionID,
+          shellID: Shell.ID.create(),
+          description: `watch ${index}`,
+          delivery: "steer",
+          log: `${directory.path}/${index}.log`,
+          startedAt: index,
+          expiresAt: index + 300000,
+          endedAt: index + 1,
+          eventCount: 0,
+          outputBytes: 0,
+          status: "ended",
+          reason: "exited",
+        }
+        yield* Effect.promise(() => Bun.write(info.log, "output"))
+        yield* kv.set(`monitor/${sessionID}/${info.id}`, info)
+        items.push(info)
+      }
+      yield* TestClock.adjust("1 second")
+      const process = yield* controlledShell
+      const running = yield* start(monitor, process.shell)
+      const retained = yield* monitor.list(sessionID)
+      expect(retained).toHaveLength(ENDED_LIMIT + 1)
+      expect(retained.some((item) => item.id === running.id)).toBe(true)
+      expect(retained.filter((item) => item.status === "ended").map((item) => item.id)).toEqual(
+        items
+          .slice(3)
+          .reverse()
+          .map((item) => item.id),
+      )
+      for (const item of items.slice(0, 3)) {
+        expect(yield* kv.get(`monitor/${sessionID}/${item.id}`)).toBeUndefined()
+        expect(yield* Effect.promise(() => Bun.file(item.log).exists())).toBe(false)
+      }
+      const ended = yield* endedQueue
+      yield* process.finish("exited", 0)
+      yield* Queue.take(ended)
+      expect(yield* kv.get(`monitor/${sessionID}/${items[3].id}`)).toBeUndefined()
+      expect(yield* monitor.list(sessionID)).toHaveLength(ENDED_LIMIT)
+    }),
+  )
+
+  it.effect("deleting a session cancels its monitors and removes all retained records and logs", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const monitor = yield* Monitor.Service
+      const sessions = yield* Session.Service
+      const kv = yield* KV.Service
+      const directory = yield* tmpdirScoped()
+      const endedProcess = yield* controlledShell
+      const endedInfo = yield* start(monitor, endedProcess.shell)
+      yield* monitor.stop({ id: endedInfo.id, sessionID })
+      const saved = { ...endedInfo, status: "ended" as const, log: `${directory.path}/ended.log` }
+      yield* Effect.promise(() => Bun.write(saved.log, "old output"))
+      yield* kv.set(`monitor/${sessionID}/${saved.id}`, saved)
+      const process = yield* controlledShell
+      yield* start(monitor, process.shell)
+      const other = yield* sessions.create({ location: { directory: AbsolutePath.make(directory.path) } })
+      const otherProcess = yield* controlledShell
+      const otherInfo = yield* monitor.start(
+        { command: "watch-ci", description: "Other session" },
+        {
+          sessionID: other.id,
+          shell: otherProcess.shell,
+          shellPath: "/bin/sh",
+          before: () => Effect.void,
+        },
+      )
+      yield* sessions.remove(sessionID)
+      while ((yield* kv.scan({ prefix: `monitor/${sessionID}/` })).entries.length) yield* Effect.yieldNow
+      expect(process.state.stops).toBe(1)
+      expect(yield* monitor.list(sessionID)).toEqual([])
+      expect(yield* Effect.promise(() => Bun.file(saved.log).exists())).toBe(false)
+      expect(otherProcess.state.stops).toBe(0)
+      expect(yield* monitor.list(other.id)).toMatchObject([{ id: otherInfo.id, status: "running" }])
+    }),
+  )
+
+  it.effect("does not spawn after the session is deleted while approval is pending", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const monitor = yield* Monitor.Service
+      const sessions = yield* Session.Service
+      const process = yield* controlledShell
+      const entered = yield* Deferred.make<void>()
+      const approval = yield* Deferred.make<void>()
+      const pending = yield* monitor
+        .start(
+          { command: "watch-ci", description: "CI watch" },
+          {
+            sessionID,
+            shell: process.shell,
+            shellPath: "/bin/sh",
+            before: () => Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(approval))),
+          },
+        )
+        .pipe(Effect.exit, Effect.forkScoped)
+      yield* Deferred.await(entered)
+      yield* sessions.remove(sessionID)
+      yield* Deferred.succeed(approval, undefined)
+      expect(Exit.isFailure(yield* Fiber.join(pending))).toBe(true)
+      expect(process.state.starts).toBe(0)
+      expect(yield* monitor.list(sessionID)).toEqual([])
+    }),
+  )
+
+  it.effect("reads retained monitor logs without live shell state and bounds each page", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const monitor = yield* Monitor.Service
+      const kv = yield* KV.Service
+      const directory = yield* tmpdirScoped()
+      const info: Info = {
+        id: ID.create(),
+        sessionID,
+        shellID: Shell.ID.create(),
+        description: "Finished watch",
+        delivery: "steer",
+        log: `${directory.path}/output.log`,
+        startedAt: 1,
+        expiresAt: 300001,
+        eventCount: 1,
+        outputBytes: 3,
+        status: "ended",
+        reason: "server_restarted",
+      }
+      yield* Effect.promise(() => Bun.write(info.log, "x".repeat(70000) + "stderr diagnostic\n"))
+      yield* kv.set(`monitor/${sessionID}/${info.id}`, info)
+      const page = yield* monitor.output({ sessionID, id: info.id, limit: 1000000 })
+      expect(page.output).toHaveLength(65536)
+      expect(page.cursor).toBe(65536)
+      expect((yield* monitor.output({ sessionID, id: info.id, cursor: page.cursor })).output).toEndWith(
+        "stderr diagnostic\n",
+      )
+      expect((yield* monitor.output({ sessionID, id: info.id, cursor: Number.MAX_SAFE_INTEGER })).cursor).toBe(
+        page.size,
+      )
+      expect(
+        Exit.isFailure(
+          yield* monitor.output({ sessionID: Session.ID.make("ses_other"), id: info.id }).pipe(Effect.exit),
+        ),
+      ).toBe(true)
+    }),
+  )
+
   it.effect("publishes started before output from a command that exits before create returns", () =>
     Effect.gen(function* () {
       yield* setup

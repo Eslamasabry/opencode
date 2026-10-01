@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { createRoot } from "solid-js"
 import { createData, type CreateDataInput } from "../src/solid"
 import { OpenCode, type MonitorInfo, type OpenCodeEvent } from "../src/promise"
+import { Monitor } from "@opencode/schema/monitor"
 
 const monitor: MonitorInfo = {
   id: "mon_ci",
@@ -58,6 +59,24 @@ test("monitor stream updates the owning session and retains ended tasks", async 
     const ended = { ...progress, status: "ended" as const, reason: "exited" as const, exitCode: 1, endedAt: 3 }
     setup.emit({ id: "evt_end", created: 3, type: "monitor.ended", data: { info: ended } })
     expect(setup.data.monitor.list(monitor.sessionID)).toEqual([ended])
+  } finally {
+    setup.dispose()
+  }
+})
+
+test("bounds live ended history while retaining running monitors", async () => {
+  const setup = fixture(async () => Response.json([monitor]))
+  try {
+    await setup.data.monitor.sync(monitor.sessionID)
+    for (let index = 0; index < Monitor.ENDED_LIMIT + 5; index++) {
+      const info = { ...monitor, id: `mon_${index}`, status: "ended" as const, endedAt: index, startedAt: index }
+      setup.emit({ id: `evt_${index}`, created: index, type: "monitor.ended", data: { info } })
+    }
+    const items = setup.data.monitor.list(monitor.sessionID)
+    expect(items).toHaveLength(Monitor.ENDED_LIMIT + 1)
+    expect(items.some((info) => info.id === monitor.id && info.status === "running")).toBe(true)
+    expect(items.some((info) => info.id === "mon_4")).toBe(false)
+    expect(items.some((info) => info.id === "mon_5")).toBe(true)
   } finally {
     setup.dispose()
   }

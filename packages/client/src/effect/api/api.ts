@@ -1527,8 +1527,28 @@ export type MonitorListInput = { readonly sessionID: Session.ID }
 export type MonitorListOutput = ReadonlyArray<Monitor.Info>
 export type MonitorListOperation<E = never> = (input: MonitorListInput) => Effect.Effect<MonitorListOutput, E>
 
+export type MonitorOutputInput = {
+  readonly sessionID: Session.ID
+  readonly id: Monitor.ID
+  readonly cursor?: number | undefined
+  readonly limit?: number | undefined
+}
+export type MonitorOutputOutput = {
+  readonly output: string
+  readonly cursor: number
+  readonly size: number
+  readonly truncated: boolean
+}
+export type MonitorOutputOperation<E = never> = (input: MonitorOutputInput) => Effect.Effect<MonitorOutputOutput, E>
+
+export type MonitorStopInput = { readonly sessionID: Session.ID; readonly id: Monitor.ID }
+export type MonitorStopOutput = Monitor.Info
+export type MonitorStopOperation<E = never> = (input: MonitorStopInput) => Effect.Effect<MonitorStopOutput, E>
+
 export interface MonitorApi<E = never> {
   readonly list: MonitorListOperation<E>
+  readonly output: MonitorOutputOperation<E>
+  readonly stop: MonitorStopOperation<E>
 }
 
 export type ModelListInput = { readonly location?: { readonly directory?: string | undefined } | undefined }

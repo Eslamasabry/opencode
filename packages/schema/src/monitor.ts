@@ -47,6 +47,20 @@ export const Info = Schema.Struct({
 }).annotate({ identifier: "Monitor.Info" })
 export interface Info extends Schema.Schema.Type<typeof Info> {}
 
+export const ENDED_LIMIT = 25
+
+export function retain<
+  T extends { readonly id: string; readonly status: Status; readonly startedAt: number; readonly endedAt?: number },
+>(items: readonly T[]) {
+  const ended = items
+    .filter((item) => item.status === "ended")
+    .toSorted((a, b) => (b.endedAt ?? b.startedAt) - (a.endedAt ?? a.startedAt) || b.id.localeCompare(a.id))
+    .slice(0, ENDED_LIMIT)
+  return [...items.filter((item) => item.status === "running"), ...ended].toSorted(
+    (a, b) => b.startedAt - a.startedAt || b.id.localeCompare(a.id),
+  )
+}
+
 const Started = ephemeral({ type: "monitor.started", schema: { info: Info } })
 const Output = ephemeral({ type: "monitor.event", schema: { info: Info, lines: Schema.Array(Schema.String) } })
 const Ended = ephemeral({ type: "monitor.ended", schema: { info: Info } })

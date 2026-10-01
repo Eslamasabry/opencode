@@ -41,8 +41,16 @@ export function ShellTab(props: { sessionID: string }) {
   const selectedEntry = createMemo(() => entries()[store.selected])
 
   const open = () => {
-    const shell = selectedEntry()?.shell
-    if (shell) dialog.replace(() => <DialogShellOutput shell={shell} location={shell.location} />)
+    const entry = selectedEntry()
+    if (entry?.monitor) {
+      const monitor = entry.monitor
+      dialog.replace(() => <DialogShellOutput monitor={monitor} />)
+      return
+    }
+    if (entry?.shell) {
+      const shell = entry.shell
+      dialog.replace(() => <DialogShellOutput shell={shell} location={shell.location} />)
+    }
   }
 
   createEffect(() => {
@@ -66,15 +74,17 @@ export function ShellTab(props: { sessionID: string }) {
       label: "Background",
       hints: () => {
         const entry = selectedEntry()
-        if (!entry?.shell) return []
+        if (!entry) return []
         return [
           { label: "output", shortcut: shortcuts.get("composer.shell.select") ?? "" },
           ...(entry.monitor?.status === "ended"
             ? []
             : [
                 {
-                  label: store.stopping[entry.shell.id] ? "stopping…" : "stop",
-                  shortcut: store.stopping[entry.shell.id] ? "" : (shortcuts.get("composer.shell.kill") ?? ""),
+                  label: store.stopping[entry.monitor?.shellID ?? entry.shell!.id] ? "stopping…" : "stop",
+                  shortcut: store.stopping[entry.monitor?.shellID ?? entry.shell!.id]
+                    ? ""
+                    : (shortcuts.get("composer.shell.kill") ?? ""),
                 },
               ]),
         ]
@@ -121,18 +131,18 @@ export function ShellTab(props: { sessionID: string }) {
         title: "Stop background task",
         group: "Composer",
         run() {
-          const shell = selectedEntry()?.shell
-          if (!shell || selectedEntry()?.monitor?.status === "ended" || store.stopping[shell.id]) return
-          setStore("stopping", shell.id, true)
-          void client.api.shell
-            .remove({
-              id: shell.id,
-              location: { directory: shell.location.directory },
-            })
+          const entry = selectedEntry()
+          const id = entry?.monitor?.shellID ?? entry?.shell?.id
+          if (!entry || !id || entry.monitor?.status === "ended" || store.stopping[id]) return
+          setStore("stopping", id, true)
+          const request = entry.monitor
+            ? client.api.monitor.stop({ id: entry.monitor.id, sessionID: props.sessionID })
+            : client.api.shell.remove({ id, location: { directory: entry.shell!.location.directory } })
+          void request
             .catch(() => {
               toast.show({ message: "Could not stop background task. Try again.", variant: "error" })
             })
-            .finally(() => setStore("stopping", shell.id, undefined))
+            .finally(() => setStore("stopping", id, undefined))
         },
       },
     ],

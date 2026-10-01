@@ -56,6 +56,20 @@ posix("caps the saved log without dropping observed stdout", () =>
   }),
 )
 
+posix("caller-owned monitor output survives removal from the shell inventory", () =>
+  Effect.gen(function* () {
+    const shell = yield* Shell.Service
+    const info = yield* shell.create({ shell: "/bin/sh", command: "printf 'finished\\n'" }, undefined, {
+      retainOutput: true,
+    })
+    yield* shell.wait(info.id)
+    yield* shell.remove(info.id)
+    expect(Exit.isFailure(yield* shell.get(info.id).pipe(Effect.exit))).toBe(true)
+    expect(yield* Effect.promise(() => Bun.file(info.file).text())).toBe("finished\n")
+    expect(info.file.split("/").at(-1)).toStartWith("monitor-")
+  }),
+)
+
 for (const reason of ["deadline", "stop"] as const) {
   posix(`${reason} kills the saved process group and keeps its log`, () =>
     Effect.gen(function* () {

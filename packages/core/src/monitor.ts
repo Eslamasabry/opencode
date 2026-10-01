@@ -3,9 +3,11 @@ export * as Monitor from "./monitor.js"
 import type { ShellCreateBefore } from "@opencode/plugin/effect/shell"
 import { Monitor } from "@opencode/schema/monitor"
 import { SessionInbox } from "@opencode/schema/session-inbox"
-import type { Info } from "@opencode/schema/shell"
+import { SessionEvent } from "@opencode/schema/session-event"
+import type { Info, Output, OutputInput } from "@opencode/schema/shell"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
-import { Cause, Clock, Context, Deferred, Effect, Exit, Layer, Schema, Scope } from "effect"
+import { Cause, Clock, Context, Deferred, Effect, Exit, Layer, Schema, Scope, Stream } from "effect"
+import { open, rm } from "node:fs/promises"
 import { Bus } from "./bus.js"
 import { Job } from "./job.js"
 import { KV } from "./kv.js"
@@ -48,6 +50,9 @@ export interface Interface {
   readonly start: (input: Input, options: Options) => Effect.Effect<Monitor.Info, unknown>
   readonly stop: (input: { id: Monitor.ID; sessionID: SessionSchema.ID }) => Effect.Effect<Monitor.Info, NotFoundError>
   readonly list: (sessionID: SessionSchema.ID) => Effect.Effect<Monitor.Info[]>
+  readonly output: (
+    input: { id: Monitor.ID; sessionID: SessionSchema.ID } & OutputInput,
+  ) => Effect.Effect<Output, NotFoundError>
   readonly recover: Effect.Effect<void>
 }
 
@@ -107,8 +112,61 @@ export const make: Effect.Effect<
         Effect.orDie,
       )
 
-  const list: Interface["list"] = (sessionID) =>
-    read(`${PREFIX}${sessionID}/`).pipe(Effect.map((items) => items.sort((a, b) => b.startedAt - a.startedAt)))
+  const discard = Effect.fnUntraced(function* (info: Monitor.Info) {
+    yield* Effect.promise(() => rm(info.log, { force: true }))
+    yield* kv.remove(key(info))
+  })
+
+  const list: Interface["list"] = Effect.fnUntraced(function* (sessionID) {
+    const items = yield* read(`${PREFIX}${sessionID}/`)
+    const retained = Monitor.retain(items)
+    const ids = new Set(retained.map((item) => item.id))
+    yield* Effect.forEach(
+      items.filter((item) => !ids.has(item.id)),
+      discard,
+      { discard: true },
+    )
+    return retained
+  })
+
+  const output: Interface["output"] = Effect.fn("Monitor.output")(function* (input) {
+    const item = yield* kv.get(key(input))
+    if (!item) return yield* new NotFoundError({ id: input.id })
+    const info = Schema.decodeUnknownSync(Monitor.Info)(item)
+    const attempt = <A>(run: () => Promise<A>) =>
+      Effect.tryPromise({ try: run, catch: () => new NotFoundError({ id: input.id }) })
+    return yield* Effect.acquireUseRelease(
+      attempt(() => open(info.log, "r")),
+      (file) =>
+        Effect.gen(function* () {
+          const size = (yield* attempt(() => file.stat())).size
+          const cursor = Math.min(Math.max(0, input.cursor ?? 0), size)
+          const buffer = Buffer.alloc(Math.min(Math.max(0, input.limit ?? 65536), 65536, size - cursor))
+          const { bytesRead } = yield* attempt(() => file.read(buffer, 0, buffer.length, cursor))
+          return {
+            output: buffer.subarray(0, bytesRead).toString("utf8"),
+            cursor: cursor + bytesRead,
+            size,
+            truncated: false,
+          }
+        }),
+      (file) => Effect.promise(() => file.close()),
+    )
+  })
+
+  yield* bus.subscribe(SessionEvent.Deleted).pipe(
+    Stream.runForEach((event) =>
+      Effect.gen(function* () {
+        for (const state of [...active.values()].filter((item) => item.info.sessionID === event.data.sessionID)) {
+          state.reason = "cancelled"
+          yield* jobs.cancel(state.info.id)
+          yield* Deferred.await(state.done)
+        }
+        yield* Effect.forEach(yield* read(`${PREFIX}${event.data.sessionID}/`), discard, { discard: true })
+      }),
+    ),
+    Effect.forkScoped({ startImmediately: true }),
+  )
 
   const start: Interface["start"] = Effect.fn("Monitor.start")(function* (input, options) {
     const count = [...active.values()].filter((item) => item.info.sessionID === options.sessionID).length
@@ -136,6 +194,7 @@ export const make: Effect.Effect<
           },
           (invocation) =>
             restore(options.before(invocation)).pipe(
+              Effect.andThen(sessions.get(options.sessionID)),
               // Monitor deadlines cannot be disabled or extended by shell hooks.
               Effect.tap(() =>
                 Effect.sync(() => {
@@ -151,8 +210,22 @@ export const make: Effect.Effect<
             },
             maxBytes: MAX_LOG_BYTES,
             forceKill: true,
+            retainOutput: true,
           },
         )
+        yield* sessions
+          .get(options.sessionID)
+          .pipe(
+            Effect.onError(() =>
+              options.shell
+                .stop(shell.id)
+                .pipe(
+                  Effect.orDie,
+                  Effect.andThen(Effect.promise(() => rm(shell.file, { force: true }))),
+                  Effect.asVoid,
+                ),
+            ),
+          )
         const startedAt = clock.currentTimeMillisUnsafe()
         const state: Active = {
           info: {
@@ -201,6 +274,20 @@ export const make: Effect.Effect<
           }
           yield* Deferred.await(admitted)
           if (shutdown) return
+          const exists = yield* sessions.get(state.info.sessionID).pipe(
+            Effect.as(true),
+            Effect.catchTag("Session.NotFoundError", () => Effect.succeed(false)),
+          )
+          if (!exists) {
+            state.info = {
+              ...state.info,
+              status: "ended",
+              reason: "cancelled",
+              endedAt: clock.currentTimeMillisUnsafe(),
+            }
+            yield* discard(state.info)
+            return
+          }
           if (output.exceeded) state.reason = "output_limit"
           yield* deliver(true)
           if (output.exceeded) state.reason = "output_limit"
@@ -214,6 +301,7 @@ export const make: Effect.Effect<
             ...(exit?.exit === undefined ? {} : { exitCode: exit.exit }),
           }
           yield* kv.set(key(state.info), encode(state.info))
+          yield* list(state.info.sessionID)
           const summary =
             reason === "exited"
               ? `exited with code ${exit?.exit ?? "unknown"}, ${state.info.eventCount} events`
@@ -301,6 +389,7 @@ export const make: Effect.Effect<
                     outputBytes: output.bytes,
                   }
                   yield* kv.set(key(state.info), encode(state.info))
+                  yield* list(state.info.sessionID)
                   yield* bus.publish(Monitor.Event.Ended, { info: state.info })
                 }),
               ),
@@ -323,6 +412,7 @@ export const make: Effect.Effect<
         active.set(id, state)
         owned = state
         yield* Effect.gen(function* () {
+          yield* sessions.get(options.sessionID)
           yield* kv.set(key(state.info), encode(state.info))
           yield* bus.publish(Monitor.Event.Started, { info: state.info })
         }).pipe(
@@ -374,6 +464,14 @@ export const make: Effect.Effect<
 
   const recover = Effect.gen(function* () {
     for (const previous of yield* read(PREFIX)) {
+      const exists = yield* sessions.get(previous.sessionID).pipe(
+        Effect.as(true),
+        Effect.catchTag("Session.NotFoundError", () => Effect.succeed(false)),
+      )
+      if (!exists) {
+        yield* discard(previous)
+        continue
+      }
       if (previous.status !== "running" || active.has(previous.id)) continue
       const info: Monitor.Info = {
         ...previous,
@@ -386,9 +484,10 @@ export const make: Effect.Effect<
       yield* notify(info, [`ended: server restarted, ${info.eventCount} events`], false)
       yield* bus.publish(Monitor.Event.Ended, { info })
     }
+    for (const sessionID of new Set((yield* read(PREFIX)).map((info) => info.sessionID))) yield* list(sessionID)
   })
 
-  return Service.of({ start, stop, list, recover })
+  return Service.of({ start, stop, list, output, recover })
 })
 
 export const node = makeGlobalNode({

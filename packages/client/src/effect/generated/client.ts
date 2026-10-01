@@ -111,6 +111,10 @@ import type {
   MessageListOutput,
   MonitorListInput,
   MonitorListOutput,
+  MonitorOutputInput,
+  MonitorOutputOutput,
+  MonitorStopInput,
+  MonitorStopOutput,
   ModelListInput,
   ModelListOutput,
   ModelDefaultInput,
@@ -830,7 +834,26 @@ const EndpointMonitorList = (raw: RawClient["server.monitor"]) => (input: Monito
     raw["monitor.list"]({ params: { sessionID: input["sessionID"] } }).pipe(Effect.mapError(mapClientError)),
   )
 
-const adaptGroupMonitor = (raw: RawClient["server.monitor"]) => ({ list: EndpointMonitorList(raw) })
+const EndpointMonitorOutput = (raw: RawClient["server.monitor"]) => (input: MonitorOutputInput) =>
+  preserveEffect<MonitorOutputOutput>()(
+    raw["monitor.output"]({
+      params: { sessionID: input["sessionID"], id: input["id"] },
+      query: { cursor: input["cursor"], limit: input["limit"] },
+    }).pipe(Effect.mapError(mapClientError)),
+  )
+
+const EndpointMonitorStop = (raw: RawClient["server.monitor"]) => (input: MonitorStopInput) =>
+  preserveEffect<MonitorStopOutput>()(
+    raw["monitor.stop"]({ params: { sessionID: input["sessionID"], id: input["id"] } }).pipe(
+      Effect.mapError(mapClientError),
+    ),
+  )
+
+const adaptGroupMonitor = (raw: RawClient["server.monitor"]) => ({
+  list: EndpointMonitorList(raw),
+  output: EndpointMonitorOutput(raw),
+  stop: EndpointMonitorStop(raw),
+})
 
 const EndpointModelList = (raw: RawClient["server.model"]) => (input?: ModelListInput) =>
   preserveEffect<ModelListOutput>()(
